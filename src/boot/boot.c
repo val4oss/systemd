@@ -2789,6 +2789,7 @@ static void export_loader_variables(
                 EFI_LOADER_FEATURE_RETAIN_SHIM |
                 EFI_LOADER_FEATURE_MENU_DISABLE |
                 EFI_LOADER_FEATURE_MULTI_PROFILE_UKI |
+                EFI_LOADER_FEATURE_OFFER_ADDONS |
                 0;
 
         assert(loaded_image);
