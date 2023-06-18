@@ -50,6 +50,18 @@ DECLARE_NOALLOC_SECTION(".sdmagic", "#### LoaderInfo: systemd-stub " GIT_VERSION
 
 DECLARE_SBAT(SBAT_STUB_SECTION_TEXT);
 
+struct addon_entry {
+        char16_t *source_path;
+        const EFI_DEVICE_PATH *device_path;
+};
+
+static int cmp_addon_entry(const struct addon_entry *s1, const struct addon_entry *s2) {
+        assert(s1);
+        assert(s2);
+
+        return strcmp16((const char16_t*)&s1->source_path, (const char16_t*)&s2->source_path);
+}
+
 static char16_t* pe_section_to_str16(
                 EFI_LOADED_IMAGE_PROTOCOL *loaded_image,
                 const PeSectionVector *section) {
@@ -294,20 +306,23 @@ nothing:
 }
 
 static EFI_STATUS load_addons_from_dir(
+                EFI_LOADED_IMAGE_PROTOCOL *current_image,
                 EFI_FILE *root,
                 const char16_t *prefix,
-                char16_t ***items,
+                struct addon_entry **addons,
                 size_t *n_items,
                 size_t *n_allocated) {
 
         _cleanup_file_close_ EFI_FILE *extra_dir = NULL;
         _cleanup_free_ EFI_FILE_INFO *dirent = NULL;
+        char16_t *addon_spath = NULL;
+        EFI_DEVICE_PATH *addon_path = NULL;
         size_t dirent_size = 0;
         EFI_STATUS err;
 
         assert(root);
         assert(prefix);
-        assert(items);
+        assert(addons);
         assert(n_items);
         assert(n_allocated);
 
@@ -342,16 +357,73 @@ static EFI_STATUS load_addons_from_dir(
 
                 if (*n_items + 2 > *n_allocated) {
                         /* We allocate 16 entries at a time, as a matter of optimization */
-                        if (*n_items > (SIZE_MAX / sizeof(uint16_t)) - 16) /* Overflow check, just in case */
+                        if (*n_items > (SIZE_MAX / sizeof(struct addon_entry)) - 16) /* Overflow check, just in case */
                                 return log_oom();
 
                         size_t m = *n_items + 16;
-                        *items = xrealloc(*items, *n_allocated * sizeof(uint16_t *), m * sizeof(uint16_t *));
+                        *addons = xrealloc(*addons, *n_allocated + sizeof(struct addon_entry), m *
+                                          sizeof(struct addon_entry));
                         *n_allocated = m;
                 }
 
-                (*items)[(*n_items)++] = TAKE_PTR(d);
-                (*items)[*n_items] = NULL; /* Let's always NUL terminate, to make freeing via strv_free() easy */
+                addon_spath = xasprintf("%ls\\%ls", prefix, d);
+                err = make_file_device_path(current_image->DeviceHandle, addon_spath, &addon_path);
+                if (err != EFI_SUCCESS)
+                        return log_error_status(err, "Error making device path for %ls: %m", addon_spath);
+
+                (*addons)[*n_items] = (struct addon_entry) {
+                        .source_path = TAKE_PTR(d),
+                        .device_path = TAKE_PTR(addon_path)
+                };
+                *n_items = *n_items + 1;
+        }
+
+        return EFI_SUCCESS;
+}
+
+static EFI_STATUS load_addons_from_efi(
+                EFI_LOADED_IMAGE_PROTOCOL *image,
+                struct addon_entry **addons,
+                size_t *n_items,
+                size_t *n_allocated) {
+
+        EFI_STATUS err;
+        EFI_DEVICE_PATH **addon_paths = NULL;
+
+        err = BS->HandleProtocol(image->DeviceHandle, MAKE_GUID_PTR(SYSTEMD_ADDON_MEDIA), (void **) &addon_paths);
+
+        if (err == EFI_UNSUPPORTED)
+                /* No addons from EFI, that's OK */
+                return EFI_SUCCESS;
+        if (err != EFI_SUCCESS)
+                return log_error_status(err, "Failed to load addons from EFI protocol: %m");
+
+        while (*addon_paths) {
+                char16_t *spath = NULL;
+                /* If we increment this pointer instead of addon_paths_split, we will arrive on a end node
+                 * marker */
+                const EFI_DEVICE_PATH *addon_dpath = *addon_paths;
+                err = device_path_to_str(addon_dpath, &spath);
+                if (err != EFI_SUCCESS)
+                        return err;
+
+                if (*n_items + 2 > *n_allocated) {
+                        /* We allocate 16 entries at a time, as a matter of optimization */
+                        if (*n_items > (SIZE_MAX / sizeof(struct addon_entry)) - 16) /* Overflow check, just in case */
+                                return log_oom();
+
+                        size_t m = *n_items + 16;
+                        *addons = xrealloc(*addons, *n_allocated + sizeof(struct addon_entry), m *
+                                          sizeof(struct addon_entry));
+                        *n_allocated = m;
+                }
+
+                (*addons)[*n_items] = (struct addon_entry) {
+                        .source_path = TAKE_PTR(spath),
+                        .device_path = TAKE_PTR(addon_dpath)
+                };
+                *n_items = *n_items + 1;
+                addon_paths++;
         }
 
         return EFI_SUCCESS;
@@ -553,9 +625,10 @@ static EFI_STATUS load_addons(
                 NamedAddon **ucode_addons,                  /* Ditto */
                 size_t *n_ucode_addons) {
 
-        _cleanup_strv_free_ char16_t **items = NULL;
+        _cleanup_free_ struct addon_entry *addons = NULL;
         _cleanup_file_close_ EFI_FILE *root = NULL;
         size_t n_items = 0, n_allocated = 0;
+        _cleanup_free_ char16_t **items = NULL;
         EFI_STATUS err;
 
         assert(stub_image);
@@ -573,7 +646,11 @@ static EFI_STATUS load_addons(
         if (err != EFI_SUCCESS)
                 return log_error_status(err, "Unable to open root directory: %m");
 
-        err = load_addons_from_dir(root, prefix, &items, &n_items, &n_allocated);
+        err = load_addons_from_dir(loaded_image, root, prefix, &addons, &n_items, &n_allocated);
+        if (err != EFI_SUCCESS)
+                return err;
+
+        err = load_addons_from_efi(loaded_image, &addons, &n_items, &n_allocated);
         if (err != EFI_SUCCESS)
                 return err;
 
@@ -582,28 +659,19 @@ static EFI_STATUS load_addons(
 
         /* Now, sort the files we found, to make this uniform and stable (and to ensure the TPM measurements
          * are not dependent on read order) */
-        sort_pointer_array((void**) items, n_items, (compare_pointer_func_t) strcmp16);
+        sort_pointer_array((void**) addons, n_items, (compare_pointer_func_t) cmp_addon_entry);
 
         for (size_t i = 0; i < n_items; i++) {
                 PeSectionVector sections[ELEMENTSOF(unified_sections)] = {};
-                _cleanup_free_ EFI_DEVICE_PATH *addon_path = NULL;
                 _cleanup_(unload_imagep) EFI_HANDLE addon = NULL;
                 EFI_LOADED_IMAGE_PROTOCOL *loaded_addon = NULL;
-                _cleanup_free_ char16_t *addon_spath = NULL;
-
-                addon_spath = xasprintf("%ls\\%ls", prefix, items[i]);
-                err = make_file_device_path(loaded_image->DeviceHandle, addon_spath, &addon_path);
-                if (err != EFI_SUCCESS)
-                        return log_error_status(err, "Error making device path for %ls: %m", addon_spath);
 
                 /* By using shim_load_image, we cover both the case where the PE files are signed with MoK
                  * and with DB, and running with or without shim. */
-                err = shim_load_image(stub_image, addon_path, /* boot_policy= */ false, &addon);
+                err = shim_load_image(stub_image,  addons[i].device_path, /* boot_policy= */ false, &addon);
                 if (err != EFI_SUCCESS) {
                         log_error_status(err,
-                                         "Failed to read '%ls' from '%ls', ignoring: %m",
-                                         items[i],
-                                         addon_spath);
+                                         "Failed to read '%ls', ignoring: %m", addons[i].source_path);
                         continue;
                 }
 
@@ -611,7 +679,8 @@ static EFI_STATUS load_addons(
                                          MAKE_GUID_PTR(EFI_LOADED_IMAGE_PROTOCOL),
                                          (void **) &loaded_addon);
                 if (err != EFI_SUCCESS)
-                        return log_error_status(err, "Failed to find protocol in %ls: %m", items[i]);
+                        return log_error_status(err, "Failed to find protocol in %ls: %m",
+                                                addons[i].source_path);
 
                 err = pe_memory_locate_sections(loaded_addon->ImageBase, unified_sections, sections);
                 if (err != EFI_SUCCESS ||
@@ -624,13 +693,13 @@ static EFI_STATUS load_addons(
                                 err = EFI_NOT_FOUND;
                         log_error_status(err,
                                          "Unable to locate embedded .cmdline/.dtb/.dtbauto/.initrd/.ucode sections in %ls, ignoring: %m",
-                                         items[i]);
+                                         addons[i].source_path);
                         continue;
                 }
 
                 /* We want to enforce that addons are not UKIs, i.e.: they must not embed a kernel. */
                 if (PE_SECTION_VECTOR_IS_SET(sections + UNIFIED_SECTION_LINUX)) {
-                        log_error("%ls is a UKI, not an addon, ignoring.", items[i]);
+                        log_error("%ls is a UKI, not an addon, ignoring.", addons[i].source_path);
                         continue;
                 }
 
@@ -640,7 +709,7 @@ static EFI_STATUS load_addons(
                                 !strneq8(uname,
                                          (const char *)loaded_addon->ImageBase + sections[UNIFIED_SECTION_UNAME].memory_offset,
                                          sections[UNIFIED_SECTION_UNAME].memory_size)) {
-                        log_error(".uname mismatch between %ls and UKI, ignoring", items[i]);
+                        log_error(".uname mismatch between %ls and UKI, ignoring", addons[i].source_path);
                         continue;
                 }
 
