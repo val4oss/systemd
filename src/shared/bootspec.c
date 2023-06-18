@@ -88,6 +88,7 @@ static void boot_entry_free(BootEntry *entry) {
         free(entry->kernel);
         free(entry->efi);
         strv_free(entry->initrd);
+        strv_free(entry->addons);
         free(entry->device_tree);
         strv_free(entry->device_tree_overlay);
 }
@@ -399,6 +400,8 @@ static int boot_entry_load_type1(
                         r = parse_path_one(tmp.path, line, field, &tmp.efi, p);
                 else if (streq(field, "initrd"))
                         r = parse_path_strv(tmp.path, line, field, &tmp.initrd, p);
+                else if (streq(field, "add-on"))
+                        r = parse_path_strv(tmp.path, line, field, &tmp.addons, p);
                 else if (streq(field, "devicetree"))
                         r = parse_path_one(tmp.path, line, field, &tmp.device_tree, p);
                 else if (streq(field, "devicetree-overlay"))
@@ -1893,6 +1896,12 @@ int show_boot_entry(
         if (r < 0)
                 return r;
 
+        STRV_FOREACH(s, e->addons)
+                boot_entry_file_list(s == e->addons ? "addons" : NULL,
+                                     e->root,
+                                     *s,
+                                     &status);
+
         if (e->device_tree)
                 boot_entry_file_list("devicetree", e->root, e->device_tree, &status);
 
@@ -1944,6 +1953,7 @@ int boot_entry_to_json(const BootConfig *c, size_t i, sd_json_variant **ret) {
                         SD_JSON_BUILD_PAIR_CONDITION(!!e->kernel, "linux", SD_JSON_BUILD_STRING(e->kernel)),
                         SD_JSON_BUILD_PAIR_CONDITION(!!e->efi, "efi", SD_JSON_BUILD_STRING(e->efi)),
                         SD_JSON_BUILD_PAIR_CONDITION(!strv_isempty(e->initrd), "initrd", SD_JSON_BUILD_STRV(e->initrd)),
+                        SD_JSON_BUILD_PAIR_CONDITION(!strv_isempty(e->addons), "addons", SD_JSON_BUILD_STRV(e->addons)),
                         SD_JSON_BUILD_PAIR_CONDITION(!!e->device_tree, "devicetree", SD_JSON_BUILD_STRING(e->device_tree)),
                         SD_JSON_BUILD_PAIR_CONDITION(!strv_isempty(e->device_tree_overlay), "devicetreeOverlay", SD_JSON_BUILD_STRV(e->device_tree_overlay)));
         if (r < 0)
