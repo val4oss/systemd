@@ -75,6 +75,15 @@ static inline void* xmemdup(const void *p, size_t l) {
 #define xnew0(type, n) ((type *) xcalloc_multiply((n), sizeof(type)))
 
 bool free_and_xstrdup16(char16_t **p, const char16_t *s);
+static inline void **xrealloc_extra_k_items(void *p, size_t item_size, size_t current_size, size_t extra_elements) {
+        size_t new_size = (current_size + extra_elements + 1) * item_size;
+        if (current_size == 0)
+                return (void**)xrealloc(p, 0, new_size);
+        else
+                return (void**)xrealloc(p, (current_size + 1) * item_size, new_size);
+}
+
+#define xrealloc_extra_item(type, p, current_size) ((type **) xrealloc_extra_k_items(p, sizeof(type *), current_size, 1))
 
 typedef struct {
         EFI_PHYSICAL_ADDRESS addr;
