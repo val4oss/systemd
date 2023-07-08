@@ -4,7 +4,7 @@
 #include "proto/device-path.h"
 #include "util.h"
 
-EFI_STATUS make_multiple_file_device_path(EFI_HANDLE device, const char16_t **files, EFI_DEVICE_PATH
+EFI_STATUS make_multiple_file_device_path(EFI_HANDLE device, char16_t * const *files, EFI_DEVICE_PATH
                 ***ret_dp);
 EFI_STATUS make_file_device_path(EFI_HANDLE device, const char16_t *file, EFI_DEVICE_PATH **ret_dp);
 EFI_STATUS make_url_device_path(const char16_t *url, EFI_DEVICE_PATH **ret);
