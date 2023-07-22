@@ -3,6 +3,12 @@
 
 #include "efi.h"
 
+/* This is used to hold PE-specific metadata
+ * under the section `.sdmeta`               */
+ struct pe_metadata {
+        const char *fname;
+};
+
 /* This is the actual PE format of the section header*/
 typedef struct PeSectionHeader {
         uint8_t  Name[8];
