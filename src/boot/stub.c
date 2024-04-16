@@ -619,6 +619,7 @@ static void extend_initrds(
 static EFI_STATUS load_addons(
                 EFI_HANDLE stub_image,
                 EFI_LOADED_IMAGE_PROTOCOL *loaded_image,
+                bool load_from_efi,
                 const char16_t *prefix,
                 const char *uname,
                 char16_t **cmdline,                         /* Both input+output, extended with new addons we find */
@@ -654,9 +655,11 @@ static EFI_STATUS load_addons(
         if (err != EFI_SUCCESS)
                 return err;
 
-        err = load_addons_from_efi(loaded_image, &addons, &n_items, &n_allocated);
-        if (err != EFI_SUCCESS)
-                return err;
+        if (load_from_efi) {
+                err = load_addons_from_efi(loaded_image, &addons, &n_items, &n_allocated);
+                if (err != EFI_SUCCESS)
+                        return err;
+        }
 
         if (n_items == 0)
                 return EFI_SUCCESS; /* Empty directory */
@@ -1103,6 +1106,7 @@ static void load_all_addons(
         err = load_addons(
                         image,
                         loaded_image,
+                        true,
                         u"\\loader\\addons",
                         uname,
                         cmdline_addons,
@@ -1123,6 +1127,7 @@ static void load_all_addons(
         err = load_addons(
                         image,
                         loaded_image,
+                        false,
                         dropin_dir,
                         uname,
                         cmdline_addons,
