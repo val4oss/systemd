@@ -437,6 +437,7 @@ static void items_free(char16_t **items, size_t n_items) {
 static EFI_STATUS load_addons(
                 EFI_HANDLE stub_image,
                 EFI_LOADED_IMAGE_PROTOCOL *loaded_image,
+                bool load_from_efi,
                 const char16_t *prefix,
                 const char *uname,
                 char16_t **ret_cmdline,
@@ -481,9 +482,11 @@ static EFI_STATUS load_addons(
         if (err != EFI_SUCCESS)
                 return err;
 
-        err = load_addons_from_efi(loaded_image, &addons, &n_items, &n_allocated);
-        if (err != EFI_SUCCESS)
-                return err;
+        if (load_from_efi) {
+                err = load_addons_from_efi(loaded_image, &addons, &n_items, &n_allocated);
+                if (err != EFI_SUCCESS)
+                        return err;
+        }
 
         if (n_items == 0)
                 return EFI_SUCCESS; /* Empty directory */
@@ -634,6 +637,7 @@ static EFI_STATUS run(EFI_HANDLE image) {
         err = load_addons(
                         image,
                         loaded_image,
+                        true,
                         u"\\loader\\addons",
                         uname,
                         &cmdline_addons_global,
@@ -650,6 +654,7 @@ static EFI_STATUS run(EFI_HANDLE image) {
                 err = load_addons(
                                 image,
                                 loaded_image,
+                                false,
                                 dropin_dir,
                                 uname,
                                 &cmdline_addons_uki,
