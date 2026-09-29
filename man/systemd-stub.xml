@@ -300,6 +300,14 @@
     this for resources configured in UAPI.1 Type #1 <literal>extra</literal>
     lines. <filename>systemd-stub</filename> will combine any resources provided that way with the companion
     file resources it acquires itself.</para>
+
+    <para>UKI add-ons (<filename>*.addon.efi</filename>) listed in Type #1 <literal>extra</literal> lines are
+    handed over by <command>systemd-boot</command> as an ordered list of paths in the volatile
+    <varname>LoaderEntryAddons</varname> EFI variable, relative to the file system the UKI was loaded from.
+    <filename>systemd-stub</filename> loads them after the add-ons found in
+    <filename>/loader/addons/</filename> and the UKI's <filename>.extra.d/</filename> directory, verifies
+    them the same way, and measures them the same way. The variable is ignored if it is not volatile, and it
+    is removed once read.</para>
   </refsect1>
 
   <refsect1>

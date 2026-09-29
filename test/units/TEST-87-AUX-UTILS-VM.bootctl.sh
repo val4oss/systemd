@@ -517,6 +517,7 @@ EOF
     echo "fake-sysext-data"  >"$LINK_WORKDIR/hello.sysext.raw"
     echo "fake-confext-data" >"$LINK_WORKDIR/hello.confext.raw"
     echo "fake-credential"   >"$LINK_WORKDIR/hello.cred"
+    echo "fake-addon"        >"$LINK_WORKDIR/hello.addon.efi"
 
     ukify build \
         --linux "$LINK_WORKDIR/vmlinuz" \
@@ -576,7 +577,8 @@ EOF
         --entry-commit=50 \
         -X "$LINK_WORKDIR/hello.sysext.raw" \
         --extra="$LINK_WORKDIR/hello.confext.raw" \
-        -X "$LINK_WORKDIR/hello.cred"
+        -X "$LINK_WORKDIR/hello.cred" \
+        -X "$LINK_WORKDIR/hello.addon.efi"
 
     ENTRY="$ESP/loader/entries/${TOKEN}-commit_50.conf"
     test -f "$ENTRY"
@@ -584,10 +586,12 @@ EOF
     test -f "$ESP/$TOKEN/hello.sysext.raw"
     test -f "$ESP/$TOKEN/hello.confext.raw"
     test -f "$ESP/$TOKEN/hello.cred"
+    test -f "$ESP/$TOKEN/hello.addon.efi"
 
     grep "^extra /${TOKEN}/hello.sysext.raw\$"  "$ENTRY" >/dev/null
     grep "^extra /${TOKEN}/hello.confext.raw\$" "$ENTRY" >/dev/null
     grep "^extra /${TOKEN}/hello.cred\$"        "$ENTRY" >/dev/null
+    grep "^extra /${TOKEN}/hello.addon.efi\$"   "$ENTRY" >/dev/null
 
     # Unlink must also clean up the extra resources
     "${BOOTCTL[@]}" unlink "${TOKEN}-commit_50.conf"
@@ -596,6 +600,7 @@ EOF
     test ! -e "$ESP/$TOKEN/hello.sysext.raw"
     test ! -e "$ESP/$TOKEN/hello.confext.raw"
     test ! -e "$ESP/$TOKEN/hello.cred"
+    test ! -e "$ESP/$TOKEN/hello.addon.efi"
 
     # --- Test 4: --oldest drops the lowest commit first ---
     "${BOOTCTL[@]}" link "$LINK_WORKDIR/testuki.efi" --entry-commit=10

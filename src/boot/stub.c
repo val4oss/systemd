@@ -118,6 +118,7 @@ static void export_stub_variables(EFI_LOADED_IMAGE_PROTOCOL *loaded_image, unsig
                 EFI_STUB_FEATURE_REPORT_STUB_PARTITION |    /* We set StubDevicePartUUID + StubImageIdentifier */
                 EFI_STUB_FEATURE_REPORT_URL |               /* We set StubDeviceURL + LoaderDeviceURL */
                 EFI_STUB_FEATURE_SMBIOS_MEASURED |          /* We measure SMBIOS data into PCR 1 */
+                EFI_STUB_FEATURE_ENTRY_ADDONS |             /* We pick up addons selected by the boot entry */
                 0;
 
         assert(loaded_image);
@@ -526,7 +527,8 @@ static void acquire_previous_initrd(struct iovec initrds[static _INITRD_MAX]) {
 static EFI_STATUS load_addons(
                 EFI_HANDLE stub_image,
                 EFI_LOADED_IMAGE_PROTOCOL *loaded_image,
-                const char16_t *prefix,
+                const char16_t *prefix,                     /* Directory to scan for addons, or NULL if 'paths' is used */
+                char16_t * const *paths,                    /* Explicit, ordered list of addon paths, instead of scanning 'prefix' */
                 const char *uname,
                 char16_t **cmdline,                         /* Both input+output, extended with new addons we find */
                 NamedAddon **devicetree_addons,             /* Ditto */
@@ -538,34 +540,43 @@ static EFI_STATUS load_addons(
 
         _cleanup_strv_free_ char16_t **items = NULL;
         _cleanup_file_close_ EFI_FILE *root = NULL;
+        char16_t * const *list = NULL;
         size_t n_items = 0, n_allocated = 0;
         EFI_STATUS err;
 
         assert(stub_image);
         assert(loaded_image);
-        assert(prefix);
+        assert(!prefix != !paths);
 
         if (!loaded_image->DeviceHandle)
                 return EFI_SUCCESS;
 
-        err = open_volume(loaded_image->DeviceHandle, &root);
-        if (err == EFI_UNSUPPORTED)
-                /* Error will be unsupported if the bootloader doesn't implement the file system protocol on
-                 * its file handles. */
-                return EFI_SUCCESS;
-        if (err != EFI_SUCCESS)
-                return log_error_status(err, "Unable to open root directory: %m");
+        if (paths) {
+                /* The caller picked the addons, keep its order and its full paths as they are. */
+                list = paths;
+                while (paths[n_items])
+                        n_items++;
+        } else {
+                err = open_volume(loaded_image->DeviceHandle, &root);
+                if (err == EFI_UNSUPPORTED)
+                        /* Error will be unsupported if the bootloader doesn't implement the file system protocol on
+                         * its file handles. */
+                        return EFI_SUCCESS;
+                if (err != EFI_SUCCESS)
+                        return log_error_status(err, "Unable to open root directory: %m");
 
-        err = load_addons_from_dir(root, prefix, &items, &n_items, &n_allocated);
-        if (err != EFI_SUCCESS)
-                return err;
+                err = load_addons_from_dir(root, prefix, &items, &n_items, &n_allocated);
+                if (err != EFI_SUCCESS)
+                        return err;
+
+                /* Now, sort the files we found, to make this uniform and stable (and to ensure the TPM
+                 * measurements are not dependent on read order) */
+                sort_pointer_array((void**) items, n_items, (compare_pointer_func_t) strcmp16);
+                list = items;
+        }
 
         if (n_items == 0)
-                return EFI_SUCCESS; /* Empty directory */
-
-        /* Now, sort the files we found, to make this uniform and stable (and to ensure the TPM measurements
-         * are not dependent on read order) */
-        sort_pointer_array((void**) items, n_items, (compare_pointer_func_t) strcmp16);
+                return EFI_SUCCESS; /* Empty directory or list */
 
         for (size_t i = 0; i < n_items; i++) {
                 PeSectionVector sections[ELEMENTSOF(unified_sections)] = {};
@@ -574,7 +585,7 @@ static EFI_STATUS load_addons(
                 EFI_LOADED_IMAGE_PROTOCOL *loaded_addon = NULL;
                 _cleanup_free_ char16_t *addon_spath = NULL;
 
-                addon_spath = xasprintf("%ls\\%ls", prefix, items[i]);
+                addon_spath = prefix ? xasprintf("%ls\\%ls", prefix, list[i]) : xstrdup16(list[i]);
                 err = make_file_device_path(loaded_image->DeviceHandle, addon_spath, &addon_path);
                 if (err != EFI_SUCCESS)
                         return log_error_status(err, "Error making device path for %ls: %m", addon_spath);
@@ -585,7 +596,7 @@ static EFI_STATUS load_addons(
                 if (err != EFI_SUCCESS) {
                         log_error_status(err,
                                          "Failed to read '%ls' from '%ls', ignoring: %m",
-                                         items[i],
+                                         list[i],
                                          addon_spath);
                         continue;
                 }
@@ -594,13 +605,13 @@ static EFI_STATUS load_addons(
                                          MAKE_GUID_PTR(EFI_LOADED_IMAGE_PROTOCOL),
                                          (void **) &loaded_addon);
                 if (err != EFI_SUCCESS)
-                        return log_error_status(err, "Failed to find protocol in %ls: %m", items[i]);
+                        return log_error_status(err, "Failed to find protocol in %ls: %m", list[i]);
 
                 err = pe_memory_locate_sections(loaded_addon->ImageBase, loaded_addon->ImageSize, unified_sections, sections);
                 if (err != EFI_SUCCESS) {
                         log_error_status(err,
                                          "Unable to locate embedded .cmdline/.dtb/.dtbauto/.efifw/.initrd/.ucode sections in %ls, ignoring: %m",
-                                         items[i]);
+                                         list[i]);
                         continue;
                 }
 
@@ -610,13 +621,13 @@ static EFI_STATUS load_addons(
                     !PE_SECTION_VECTOR_IS_SET(sections + UNIFIED_SECTION_INITRD) &&
                     !PE_SECTION_VECTOR_IS_SET(sections + UNIFIED_SECTION_UCODE)) {
                         log_debug("No applicable .cmdline/.dtb/.dtbauto/.initrd/.ucode sections found in %ls, ignoring.",
-                                  items[i]);
+                                  list[i]);
                         continue;
                 }
 
                 /* We want to enforce that addons are not UKIs, i.e.: they must not embed a kernel. */
                 if (PE_SECTION_VECTOR_IS_SET(sections + UNIFIED_SECTION_LINUX)) {
-                        log_error("%ls is a UKI, not an addon, ignoring.", items[i]);
+                        log_error("%ls is a UKI, not an addon, ignoring.", list[i]);
                         continue;
                 }
 
@@ -626,7 +637,7 @@ static EFI_STATUS load_addons(
                                 !strneq8(uname,
                                          (const char *)loaded_addon->ImageBase + sections[UNIFIED_SECTION_UNAME].memory_offset,
                                          sections[UNIFIED_SECTION_UNAME].memory_size)) {
-                        log_error(".uname mismatch between %ls and UKI, ignoring", items[i]);
+                        log_error(".uname mismatch between %ls and UKI, ignoring", list[i]);
                         continue;
                 }
 
@@ -649,7 +660,7 @@ static EFI_STATUS load_addons(
                                         .iov_base = xmemdup((const uint8_t*) loaded_addon->ImageBase + sections[UNIFIED_SECTION_DTBAUTO].memory_offset, sections[UNIFIED_SECTION_DTBAUTO].memory_size),
                                         .iov_len = sections[UNIFIED_SECTION_DTBAUTO].memory_size,
                                 },
-                                .filename = xstrdup16(items[i]),
+                                .filename = xstrdup16(list[i]),
                         };
                 } else if (devicetree_addons && PE_SECTION_VECTOR_IS_SET(sections + UNIFIED_SECTION_DTB)) {
                         *devicetree_addons = xrealloc(*devicetree_addons,
@@ -661,7 +672,7 @@ static EFI_STATUS load_addons(
                                         .iov_base = xmemdup((const uint8_t*) loaded_addon->ImageBase + sections[UNIFIED_SECTION_DTB].memory_offset, sections[UNIFIED_SECTION_DTB].memory_size),
                                         .iov_len = sections[UNIFIED_SECTION_DTB].memory_size,
                                 },
-                                .filename = xstrdup16(items[i]),
+                                .filename = xstrdup16(list[i]),
                         };
                 }
 
@@ -674,7 +685,7 @@ static EFI_STATUS load_addons(
                                         .iov_base = xmemdup((const uint8_t*) loaded_addon->ImageBase + sections[UNIFIED_SECTION_INITRD].memory_offset, sections[UNIFIED_SECTION_INITRD].memory_size),
                                         .iov_len = sections[UNIFIED_SECTION_INITRD].memory_size,
                                 },
-                                .filename = xstrdup16(items[i]),
+                                .filename = xstrdup16(list[i]),
                         };
                 }
 
@@ -687,7 +698,7 @@ static EFI_STATUS load_addons(
                                         .iov_base = xmemdup((const uint8_t*) loaded_addon->ImageBase + sections[UNIFIED_SECTION_UCODE].memory_offset, sections[UNIFIED_SECTION_UCODE].memory_size),
                                         .iov_len = sections[UNIFIED_SECTION_UCODE].memory_size,
                                 },
-                                .filename = xstrdup16(items[i]),
+                                .filename = xstrdup16(list[i]),
                         };
                 }
         }
@@ -1016,6 +1027,82 @@ static void install_embedded_devicetree(
                 log_error_status(err, "Error loading embedded devicetree, ignoring: %m");
 }
 
+static EFI_STATUS load_entry_addons(
+                EFI_HANDLE image,
+                EFI_LOADED_IMAGE_PROTOCOL *loaded_image,
+                const char *uname,
+                char16_t **cmdline_addons,
+                NamedAddon **dt_addons,
+                size_t *n_dt_addons,
+                NamedAddon **initrd_addons,
+                size_t *n_initrd_addons,
+                NamedAddon **ucode_addons,
+                size_t *n_ucode_addons) {
+
+        _cleanup_free_ void *data = NULL;
+        _cleanup_strv_free_ char16_t **paths = NULL;
+        size_t size = 0, n_paths = 0;
+        uint32_t attrs = 0;
+        EFI_STATUS err;
+
+        assert(image);
+        assert(loaded_image);
+
+        /* The boot loader hands us the addons selected by the boot entry via a volatile variable: an ordered
+         * list of NUL-terminated paths relative to the root of the file system we were loaded from. */
+
+        err = efivar_get_raw_full(MAKE_GUID_PTR(LOADER), u"LoaderEntryAddons", &attrs, &data, &size);
+        if (err == EFI_NOT_FOUND)
+                return EFI_SUCCESS;
+        if (err != EFI_SUCCESS)
+                return log_error_status(err, "Failed to read LoaderEntryAddons variable: %m");
+
+        /* It's for us only, don't leave it around for whatever runs after us. */
+        (void) efivar_unset(MAKE_GUID_PTR(LOADER), u"LoaderEntryAddons", attrs);
+
+        /* Only ever honour the variable if it was set in this boot, i.e. if it's volatile. */
+        if (FLAGS_SET(attrs, EFI_VARIABLE_NON_VOLATILE)) {
+                log_warning("LoaderEntryAddons variable is not volatile, ignoring.");
+                return EFI_SUCCESS;
+        }
+
+        if (size % sizeof(char16_t) != 0 || size == 0)
+                return log_warning_status(EFI_INVALID_PARAMETER, "LoaderEntryAddons variable has invalid size, ignoring.");
+
+        const char16_t *p = data, *end = (const char16_t *) ((const uint8_t *) data + size);
+        while (p < end) {
+                size_t len = strnlen16(p, end - p);
+                if (len == (size_t) (end - p))
+                        return log_warning_status(EFI_INVALID_PARAMETER, "LoaderEntryAddons variable is not NUL-terminated, ignoring.");
+
+                if (len > 0 && is_ascii(p) && endswith_no_case(p, u".addon.efi")) {
+                        paths = xrealloc(paths, n_paths == 0 ? 0 : (n_paths + 1) * sizeof(char16_t *), (n_paths + 2) * sizeof(char16_t *));
+                        paths[n_paths++] = xstrdup16(p);
+                        paths[n_paths] = NULL;
+                } else
+                        log_warning("Ignoring invalid addon path '%ls' from boot entry.", p);
+
+                p += len + 1;
+        }
+
+        if (n_paths == 0)
+                return EFI_SUCCESS;
+
+        return load_addons(
+                        image,
+                        loaded_image,
+                        /* prefix= */ NULL,
+                        paths,
+                        uname,
+                        cmdline_addons,
+                        dt_addons,
+                        n_dt_addons,
+                        initrd_addons,
+                        n_initrd_addons,
+                        ucode_addons,
+                        n_ucode_addons);
+}
+
 static void load_all_addons(
                 EFI_HANDLE image,
                 EFI_LOADED_IMAGE_PROTOCOL *loaded_image,
@@ -1043,6 +1130,7 @@ static void load_all_addons(
                         image,
                         loaded_image,
                         u"\\loader\\addons",
+                        /* paths= */ NULL,
                         uname,
                         cmdline_addons,
                         dt_addons,
@@ -1056,13 +1144,27 @@ static void load_all_addons(
 
         /* Some bootloaders always pass NULL in FilePath, so we need to check for it here. */
         _cleanup_free_ char16_t *dropin_dir = get_extra_dir(loaded_image->FilePath);
-        if (!dropin_dir)
-                return;
+        if (dropin_dir) {
+                err = load_addons(
+                                image,
+                                loaded_image,
+                                dropin_dir,
+                                /* paths= */ NULL,
+                                uname,
+                                cmdline_addons,
+                                dt_addons,
+                                n_dt_addons,
+                                initrd_addons,
+                                n_initrd_addons,
+                                ucode_addons,
+                                n_ucode_addons);
+                if (err != EFI_SUCCESS)
+                        log_error_status(err, "Error loading UKI-specific addons, ignoring: %m");
+        }
 
-        err = load_addons(
+        err = load_entry_addons(
                         image,
                         loaded_image,
-                        dropin_dir,
                         uname,
                         cmdline_addons,
                         dt_addons,
@@ -1072,7 +1174,7 @@ static void load_all_addons(
                         ucode_addons,
                         n_ucode_addons);
         if (err != EFI_SUCCESS)
-                log_error_status(err, "Error loading UKI-specific addons, ignoring: %m");
+                log_error_status(err, "Error loading addons selected by the boot entry, ignoring: %m");
 }
 
 static void display_splash(

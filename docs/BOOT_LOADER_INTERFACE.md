@@ -109,6 +109,15 @@ Variables will be listed below using the Linux efivarfs naming,
   It is set by the boot loader and read by the OS
   in order to identify which entry has been used for the current boot.
 
+* The EFI variable `LoaderEntryAddons-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f`
+  contains an ordered list of UKI add-on paths selected by the entry that is being booted,
+  formatted as concatenated, NUL-terminated UTF-16 strings (the same way as `LoaderEntries`),
+  each relative to the root of the file system the UKI is loaded from.
+  It is set as a volatile variable by the boot loader right before starting a Type #1 `uki` entry
+  that has `extra` fields ending in `.addon.efi`, and is removed otherwise.
+  It is read by the stub (which verifies every file it loads), and removed by it again.
+  Consumers must ignore it if it is not volatile.
+
 * The EFI variable `LoaderFeatures-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f`
   contains a 64-bit unsigned integer with a number of flags bits
   that are set by the boot loader and passed to the OS
@@ -147,6 +156,8 @@ Variables will be listed below using the Linux efivarfs naming,
                 EFI variable `LoaderKeyboardLayout-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f`.
   * `1 << 21` → The boot loader measures SMBIOS information into a TPM2 PCR and reports the PCR index in the
                 EFI variable `LoaderPcrSMBIOS-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f`.
+  * `1 << 22` → The boot loader passes UKI add-ons (`*.addon.efi`) listed in `extra` fields of Type #1 entries
+                to the stub via the EFI variable `LoaderEntryAddons-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f`.
 
 * The EFI variable `LoaderSystemToken-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f`
   contains binary random data,

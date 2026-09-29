@@ -448,6 +448,21 @@
       <citerefentry><refentrytitle>systemd-confext</refentrytitle><manvolnum>8</manvolnum></citerefentry>
       for details on configuration extension images. The generated <command>cpio</command> archive is
       measured into TPM PCR 12 (if a TPM is present).</para></listitem>
+
+      <listitem><para>Files with the <filename>.addon.efi</filename> suffix are UKI add-ons (see
+      <citerefentry><refentrytitle>systemd-stub</refentrytitle><manvolnum>7</manvolnum></citerefentry>).
+      They are not packed into an initrd. Instead <command>systemd-boot</command> passes their paths, in the
+      order of the <literal>extra</literal> lines, to <command>systemd-stub</command> of the UKI via the
+      volatile <varname>LoaderEntryAddons</varname> EFI variable. The stub then loads and verifies them
+      exactly like add-ons found in <filename>/loader/addons/</filename> and the UKI's
+      <filename>.extra.d/</filename> directory, and applies their <literal>.cmdline</literal>,
+      <literal>.dtb</literal>, <literal>.initrd</literal> and <literal>.ucode</literal> sections. This allows
+      an entry to select individual add-ons, for example to add entry-specific kernel command line
+      options. Entry-selected add-ons are applied after the ones from the two directories, hence they should
+      be stored elsewhere to avoid being applied twice. This is only supported for entries using the
+      <literal>uki</literal> key, and it requires a <command>systemd-stub</command> that supports it (see
+      the <literal>Pick up addons selected by the boot entry</literal> stub feature in
+      <command>bootctl status</command>), older stubs ignore the variable.</para></listitem>
     </itemizedlist>
 
     <para>When the booted kernel is a UKI, the <command>systemd-stub</command> UEFI stub embedded in it will
@@ -466,7 +481,8 @@ machine-id  6a9857a393724b7a981ebb5b8495b9ea
 uki         /6a9857a393724b7a981ebb5b8495b9ea/1.2.3/img.efi
 extra       /6a9857a393724b7a981ebb5b8495b9ea/1.2.3/foo.cred
 extra       /6a9857a393724b7a981ebb5b8495b9ea/1.2.3/bar.sysext.raw
-extra       /6a9857a393724b7a981ebb5b8495b9ea/1.2.3/baz.confext.raw</programlisting>
+extra       /6a9857a393724b7a981ebb5b8495b9ea/1.2.3/baz.confext.raw
+extra       /6a9857a393724b7a981ebb5b8495b9ea/1.2.3/snapshots/1.addon.efi</programlisting>
   </refsect1>
 
   <refsect1>

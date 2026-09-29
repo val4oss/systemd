@@ -2741,6 +2741,10 @@ static EFI_STATUS load_extras(
         unsigned n = 0;
 
         STRV_FOREACH(i, entry->extras) {
+                /* Add-ons are not packed into the initrd, they are handed to the stub, see set_entry_addons() */
+                if (endswith_no_case(*i, u".addon.efi"))
+                        continue;
+
                 _cleanup_file_close_ EFI_FILE *handle = NULL;
                 err = root->Open(root, &handle, *i, EFI_FILE_MODE_READ, /* Attributes= */ 0);
                 if (err != EFI_SUCCESS) {
@@ -2871,6 +2875,36 @@ nothing:
         *ret_initrd_pages = (Pages) {};
         *ret_initrd_size = 0;
         return EFI_SUCCESS;
+}
+
+static void set_entry_addons(const BootEntry *entry, bool can_load) {
+        assert(entry);
+
+        /* Always drop any stale value first, so the stub never sees a list that was meant for another entry. */
+        (void) efivar_unset(MAKE_GUID_PTR(LOADER), u"LoaderEntryAddons", 0);
+
+        if (!can_load || entry->type != LOADER_UKI)
+                return;
+
+        size_t sz = 0;
+        STRV_FOREACH(i, entry->extras)
+                if (endswith_no_case(*i, u".addon.efi"))
+                        sz += strsize16(*i);
+
+        if (sz == 0)
+                return;
+
+        _cleanup_free_ char *buffer = xmalloc(sz);
+        char *p = buffer;
+        STRV_FOREACH(i, entry->extras)
+                if (endswith_no_case(*i, u".addon.efi"))
+                        p = mempcpy(p, *i, strsize16(*i));
+
+        assert(p == buffer + sz);
+
+        /* Ordered list of NUL-terminated paths, relative to the root of the UKI's file system. Volatile, the
+         * stub verifies every file it loads from this list on its own. */
+        (void) efivar_set_raw(MAKE_GUID_PTR(LOADER), u"LoaderEntryAddons", buffer, sz, 0);
 }
 
 static EFI_STATUS expand_path(
@@ -3104,6 +3138,8 @@ static EFI_STATUS call_image_start(
                 (void) tpm_log_load_options(options, NULL);
         }
 
+        set_entry_addons(entry, /* can_load= */ !!image_root);
+
         efivar_set_time_usec(MAKE_GUID_PTR(LOADER), u"LoaderTimeExecUSec", 0);
         err = BS->StartImage(image, NULL, NULL);
         graphics_mode(false);
@@ -3284,6 +3320,7 @@ static void export_loader_variables(
                 EFI_LOADER_FEATURE_TPM2_ACTIVE_PCR_BANKS |
                 EFI_LOADER_FEATURE_KEYBOARD_LAYOUT |
                 EFI_LOADER_FEATURE_SMBIOS_MEASURED |
+                EFI_LOADER_FEATURE_ENTRY_ADDONS |
                 0;
 
         assert(loaded_image);
